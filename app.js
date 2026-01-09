@@ -213,36 +213,56 @@ function isFingerExtended(landmarks, fingerIndex) {
   const mcp = landmarks[mcpIndex];
   const wrist = landmarks[0];
 
-  // For thumb: special handling
+  // For thumb: special handling - thumb moves differently than other fingers
   if (fingerIndex === 0) {
-    const thumbCmc = landmarks[1]; // Thumb CMC joint
-    const thumbMcp = landmarks[2]; // Thumb MCP joint
-    const thumbIp = landmarks[3];  // Thumb IP joint
-    const thumbTip = landmarks[4]; // Thumb tip
-    const indexMcp = landmarks[5]; // Index finger MCP for reference
+    const thumbCmc = landmarks[1];  // Thumb CMC joint
+    const thumbMcp = landmarks[2];  // Thumb MCP joint
+    const thumbIp = landmarks[3];   // Thumb IP joint
+    const thumbTip = landmarks[4];  // Thumb tip
+    const indexMcp = landmarks[5];  // Index finger MCP
+    const indexTip = landmarks[8];  // Index finger tip
+    const pinkyMcp = landmarks[17]; // Pinky MCP
 
-    // Method 1: Check angle at IP joint (straight thumb = high angle ~160-180°)
-    const ipAngle = angleBetweenPoints(thumbMcp, thumbIp, thumbTip);
+    // Method 1: Thumb tip should be farther from index finger tip than thumb IP is
+    // When thumb is extended, its tip is away from the curled fingers
+    const tipToIndexTip = distance3D(thumbTip, indexTip);
+    const ipToIndexTip = distance3D(thumbIp, indexTip);
+    const thumbAwayFromFingers = tipToIndexTip > ipToIndexTip * 0.8;
 
-    // Method 2: Check distance from thumb tip to index MCP
-    // Extended thumb is far from index finger base
-    const thumbToIndexDist = distance3D(thumbTip, indexMcp);
-    const palmWidth = distance3D(landmarks[5], landmarks[17]); // Index MCP to Pinky MCP
-    const thumbSpread = thumbToIndexDist / palmWidth;
+    // Method 2: Check thumb "openness" - angle at MCP joint
+    // Extended thumb has wider angle at MCP
+    const mcpAngle = angleBetweenPoints(thumbCmc, thumbMcp, thumbIp);
+    const isThumbOpen = mcpAngle > 120;
 
-    // Method 3: Check if thumb tip is far from palm center
-    const palmCenter = landmarks[9]; // Middle MCP as palm center
-    const thumbToPalmDist = distance3D(thumbTip, palmCenter);
-    const wristToPalmDist = distance3D(wrist, palmCenter);
-    const thumbExtension = thumbToPalmDist / wristToPalmDist;
+    // Method 3: Thumb tip distance from wrist vs thumb MCP distance from wrist
+    // Extended thumb: tip is farther from wrist
+    const tipToWrist = distance3D(thumbTip, wrist);
+    const mcpToWrist = distance3D(thumbMcp, wrist);
+    const thumbExtended = tipToWrist > mcpToWrist * 1.1;
 
-    // Thumb is extended if:
-    // - IP joint angle is relatively straight (> 140°) AND
-    // - Thumb is spread away from palm (extension ratio > 0.8) OR spread from index
-    const isAngleStraight = ipAngle > 140;
-    const isSpreadOut = thumbSpread > 0.6 || thumbExtension > 0.9;
+    // Method 4: Check if thumb tip is far from palm center (middle MCP)
+    const palmCenter = landmarks[9];
+    const thumbToPalm = distance3D(thumbTip, palmCenter);
+    const indexMcpToPalm = distance3D(indexMcp, palmCenter);
+    const thumbSpreadFromPalm = thumbToPalm > indexMcpToPalm * 0.7;
 
-    return isAngleStraight && isSpreadOut;
+    // Method 5: Simple check - is thumb tip farther from pinky MCP than thumb MCP is?
+    // This works regardless of hand orientation
+    const tipToPinky = distance3D(thumbTip, pinkyMcp);
+    const mcpToPinky = distance3D(thumbMcp, pinkyMcp);
+    const thumbOutward = tipToPinky > mcpToPinky * 0.9;
+
+    // Thumb is extended if multiple conditions are met (at least 2 of 4)
+    const conditions = [
+      thumbAwayFromFingers,
+      isThumbOpen,
+      thumbExtended,
+      thumbSpreadFromPalm,
+      thumbOutward
+    ];
+    const trueCount = conditions.filter(Boolean).length;
+
+    return trueCount >= 2;
   }
 
   // For other fingers: use angle-based detection
@@ -759,6 +779,9 @@ function onResults(results) {
     `;
     document.getElementById('confidence-fill').style.width = '0%';
     document.getElementById('confidence-value').textContent = '0%';
+
+    // Reset finger display to all inactive
+    updateFingerDisplay([0, 0, 0, 0, 0]);
 
     updateTrajectory(null);
     drawSkeleton(null, null);
