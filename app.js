@@ -167,7 +167,42 @@ function updateLatency(processingTime) {
   document.getElementById('latency').textContent = `${Math.round(processingTime)} ms`;
 }
 
-// Determine if a finger is extended
+// Calculate distance between two 3D points
+function distance3D(p1, p2) {
+  const dx = p1.x - p2.x;
+  const dy = p1.y - p2.y;
+  const dz = (p1.z || 0) - (p2.z || 0);
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// Calculate angle between three points (in degrees)
+// Returns the angle at point p2 (the middle point)
+function angleBetweenPoints(p1, p2, p3) {
+  const v1 = { x: p1.x - p2.x, y: p1.y - p2.y, z: (p1.z || 0) - (p2.z || 0) };
+  const v2 = { x: p3.x - p2.x, y: p3.y - p2.y, z: (p3.z || 0) - (p2.z || 0) };
+
+  const dot = v1.x * v2.x + v1.y * v2.y + v1.z * v2.z;
+  const mag1 = Math.sqrt(v1.x * v1.x + v1.y * v1.y + v1.z * v1.z);
+  const mag2 = Math.sqrt(v2.x * v2.x + v2.y * v2.y + v2.z * v2.z);
+
+  if (mag1 === 0 || mag2 === 0) return 0;
+
+  const cosAngle = Math.max(-1, Math.min(1, dot / (mag1 * mag2)));
+  return Math.acos(cosAngle) * (180 / Math.PI);
+}
+
+// Get palm direction vector (from wrist toward middle finger base)
+function getPalmDirection(landmarks) {
+  const wrist = landmarks[0];
+  const middleMcp = landmarks[9];
+  return {
+    x: middleMcp.x - wrist.x,
+    y: middleMcp.y - wrist.y,
+    z: (middleMcp.z || 0) - (wrist.z || 0)
+  };
+}
+
+// Determine if a finger is extended using angle-based detection
 function isFingerExtended(landmarks, fingerIndex) {
   const tipIndex = FINGER_TIPS[fingerIndex];
   const pipIndex = FINGER_PIPS[fingerIndex];
@@ -176,18 +211,74 @@ function isFingerExtended(landmarks, fingerIndex) {
   const tip = landmarks[tipIndex];
   const pip = landmarks[pipIndex];
   const mcp = landmarks[mcpIndex];
+  const wrist = landmarks[0];
 
-  // For thumb, use x-axis comparison
+  // For thumb: special handling
   if (fingerIndex === 0) {
-    const wrist = landmarks[0];
-    // Check if thumb tip is further from wrist than the thumb IP joint
-    const tipDist = Math.abs(tip.x - wrist.x);
-    const pipDist = Math.abs(pip.x - wrist.x);
-    return tipDist > pipDist;
+    const thumbCmc = landmarks[1]; // Thumb CMC joint
+    const thumbMcp = landmarks[2]; // Thumb MCP joint
+    const thumbIp = landmarks[3];  // Thumb IP joint
+    const thumbTip = landmarks[4]; // Thumb tip
+    const indexMcp = landmarks[5]; // Index finger MCP for reference
+
+    // Method 1: Check angle at IP joint (straight thumb = high angle ~160-180°)
+    const ipAngle = angleBetweenPoints(thumbMcp, thumbIp, thumbTip);
+
+    // Method 2: Check distance from thumb tip to index MCP
+    // Extended thumb is far from index finger base
+    const thumbToIndexDist = distance3D(thumbTip, indexMcp);
+    const palmWidth = distance3D(landmarks[5], landmarks[17]); // Index MCP to Pinky MCP
+    const thumbSpread = thumbToIndexDist / palmWidth;
+
+    // Method 3: Check if thumb tip is far from palm center
+    const palmCenter = landmarks[9]; // Middle MCP as palm center
+    const thumbToPalmDist = distance3D(thumbTip, palmCenter);
+    const wristToPalmDist = distance3D(wrist, palmCenter);
+    const thumbExtension = thumbToPalmDist / wristToPalmDist;
+
+    // Thumb is extended if:
+    // - IP joint angle is relatively straight (> 140°) AND
+    // - Thumb is spread away from palm (extension ratio > 0.8) OR spread from index
+    const isAngleStraight = ipAngle > 140;
+    const isSpreadOut = thumbSpread > 0.6 || thumbExtension > 0.9;
+
+    return isAngleStraight && isSpreadOut;
   }
 
-  // For other fingers, compare y positions (lower y = higher on screen = extended)
-  return tip.y < pip.y;
+  // For other fingers: use angle-based detection
+  // Check the angle at PIP joint - extended fingers have straighter angles
+  const pipAngle = angleBetweenPoints(mcp, pip, tip);
+
+  // Also check angle at MCP joint
+  const mcpAngle = angleBetweenPoints(wrist, mcp, pip);
+
+  // Calculate finger direction relative to palm
+  const palmDir = getPalmDirection(landmarks);
+  const fingerDir = {
+    x: tip.x - mcp.x,
+    y: tip.y - mcp.y,
+    z: (tip.z || 0) - (mcp.z || 0)
+  };
+
+  // Dot product to see if finger points same direction as palm
+  const dotProduct = palmDir.x * fingerDir.x + palmDir.y * fingerDir.y + palmDir.z * fingerDir.z;
+  const palmMag = Math.sqrt(palmDir.x ** 2 + palmDir.y ** 2 + palmDir.z ** 2);
+  const fingerMag = Math.sqrt(fingerDir.x ** 2 + fingerDir.y ** 2 + fingerDir.z ** 2);
+  const alignment = dotProduct / (palmMag * fingerMag || 1);
+
+  // Extended finger criteria:
+  // 1. PIP angle is relatively straight (> 150°) - finger not curled
+  // 2. Finger generally points in palm direction (alignment > 0) OR
+  // 3. MCP angle suggests finger is raised (> 140°)
+  const isStraight = pipAngle > 150;
+  const isRaised = mcpAngle > 140 || alignment > 0.3;
+
+  // Additional check: tip should be further from wrist than MCP
+  const tipToWrist = distance3D(tip, wrist);
+  const mcpToWrist = distance3D(mcp, wrist);
+  const isExtended = tipToWrist > mcpToWrist * 0.9;
+
+  return isStraight && (isRaised || isExtended);
 }
 
 // Detect gesture from finger states
